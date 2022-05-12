@@ -1,0 +1,12 @@
+github教學(
+初始化 git init
+連結電腦 git clon未下載檔案時)e
+
+上傳檔案(add後要有空白鍵) git add .
+註記這次上傳更改了甚麼 git commit -m "  "
+
+連結到新專案 git remote add origin 網址
+將整份資料上傳到上面 git push -u origin master
+
+教學影片:
+初學:https://www.youtube.com/watch?v=Zd5jSDRjWfA&list=PLRpVpuPZFHyyYnt-uzZb-7igZ4Y9Mx5Dm&index=2

@@ -1,0 +1,1016 @@
+###############################################################################
+library(shiny)
+library(shinythemes)
+library(quantmod)
+library(ggplot2)
+library(cowplot)
+library(shinydashboard)
+library(rclipboard)
+library(shinycustomloader)
+library(dplyr)
+library(rvest)
+library(magrittr)
+library(ggpubr)
+library(pdftools)
+library(tidyverse)
+library(stringr)
+library(div)
+library(DT)
+################################################################################
+
+###外部 function
+
+##處理好的資料sdata(包括計算用矩陣) 
+stock_data<-function(snum,fromdate,todate){
+  ###################################################################
+  ##原矩陣
+  #from為起始時間 #Sys.Date()
+  sdata <- get(getSymbols(snum,src="yahoo",from=fromdate,to=todate))
+  
+  #將時間序列轉為變數
+  sdata_date<-index(sdata)
+  sdata<-as.data.frame(sdata)
+  sdata<-cbind(sdata_date,sdata)
+  #算有幾列
+  sd_nrow<-nrow(sdata)
+  #################################################################
+  ##計算用矩陣
+  #往前算90天
+  s_c_data <- get(getSymbols(snum,src="yahoo",from=as.Date(fromdate)-90,to=todate)) 
+  
+  #將時間序列轉為變數
+  sdata_c_date<-index(s_c_data)
+  s_c_data<-as.data.frame(s_c_data)
+  s_c_data<-cbind(sdata_c_date,s_c_data)
+  s_c_nrow<-nrow(s_c_data)
+  ################################################################
+  #回傳股票代碼、起始日期、
+  return(list(snum,fromdate,todate,
+              sdata,sd_nrow,
+              s_c_data,s_c_nrow)
+  )
+}
+
+##股票的介面圖 
+stock_interface<-function(stock_data_fun){
+  options(scipen = 999)
+  
+  #將資訊輸入
+  sdata_f<-stock_data_fun
+  snum<-sdata_f[[1]]
+  data<-sdata_f[[4]]
+  sdata_date<-sdata_f[[4]][,"sdata_date"]
+  
+  #k棒_分組
+  
+  Group<-rep(0,length(data[,paste0(snum,".Open")]))
+  equal_pt<-rep(0,length(data[,paste0(snum,".Open")]))
+  
+  for(i in 1:length(data[,paste0(snum,".Open")])){
+    ifelse(data[,paste0(snum,".Open")][i]>=data[,paste0(snum,".Close")][i]
+           ,group<-"陰線",group<-"陽線")  
+    ifelse(data[,paste0(snum,".Open")][i]==data[,paste0(snum,".Close")][i]
+           ,equal_pt[i]<-data[,paste0(snum,".Open")][i],equal_pt[i]<-NA)
+    Group[i]<-group
+  }
+  data<-cbind(data,Group,equal_pt)
+  
+  #k棒
+  #ggplot +號放後面
+  candle_p<-ggplot(data=data,aes(x=sdata_date))+
+    geom_linerange(aes(ymin=data[,paste0(snum,".Low")]
+                       ,ymax=data[,paste0(snum,".High")]
+    )
+    ,size=0.2)+
+    geom_rect(aes(xmin=sdata_date-0.5,xmax=sdata_date+0.5
+                  ,ymin=pmin(data[,paste0(snum,".Open")],data[,paste0(snum,".Close")])
+                  ,ymax=pmax(data[,paste0(snum,".Open")],data[,paste0(snum,".Close")])
+                  ,fill=data[,"Group"])
+    )+
+    geom_point(aes(y = equal_pt), shape = "-", size = 4, color = "black",na.rm=T)+
+    
+    scale_fill_manual(values = c("陰線"="#00bb00","陽線"="#ce0000"))+
+    labs(x="",y="價錢"
+         ,title=paste0(snum," ","[",sdata_date[1],"/",sdata_date[length(sdata_date)],"]"),fill=NULL)+
+    
+    scale_x_date(date_breaks = "1 month", date_labels=c("%m/%d"))+
+    theme(axis.text.y = element_text(margin = margin(r = -21)),legend.position = "none")
+  #guides(fill=F)
+  #theme_bw() + theme(panel.grid=element_blank())+
+  #theme(axis.text.x = element_text(angle=30))
+  #all_p<-plot_grid(candle_p,volume_p
+  # ,nrow=2,axis = c( "tblr"), align = "v")
+  
+  #匯出圖
+  print(candle_p)
+}
+
+##股票的介面圖 
+Bb_p<-function(stock_data_fun){
+  
+  #將資訊輸入
+  sdata_f<-stock_data_fun
+  snum<-sdata_f[[1]]
+  data<-sdata_f[[4]]
+  sdata_date<-sdata_f[[4]][,"sdata_date"]
+  sd_nrow<-sdata_f[[5]]
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  Close= s_c_data[,paste0(snum,".Close")]
+  MA_20<-c(rep(0,length(Close)))
+  for(i in 20:length(Close)){MA_20[i]=mean(Close[c(i-19):i])}
+  MA_UP<-c(rep(0,length(Close)))
+  for(i in 20:length(Close)){MA_UP[i]=mean(Close[c(i-19):i])+2*sd(Close[c(i-19):i])}
+  MA_DOWN<-c(rep(0,length(Close)))
+  for(i in 20:length(Close)){MA_DOWN[i]=mean(Close[c(i-19):i])-2*sd(Close[c(i-19):i])}
+  
+  MA_20<-MA_20[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  MA_UP<-MA_UP[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  MA_DOWN<-MA_DOWN[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  
+  Group<-rep(0,length(data[,paste0(snum,".Open")]))
+  equal_pt<-rep(0,length(data[,paste0(snum,".Open")]))
+  
+  for(i in 1:length(data[,paste0(snum,".Open")])){
+    ifelse(data[,paste0(snum,".Open")][i]>=data[,paste0(snum,".Close")][i]
+           ,group<-"fall",group<-"rise")  
+    ifelse(data[,paste0(snum,".Open")][i]==data[,paste0(snum,".Close")][i]
+           ,equal_pt[i]<-data[,paste0(snum,".Open")][i],equal_pt[i]<-NA)
+    Group[i]<-group
+  }
+  data<-cbind(data,Group,equal_pt)
+  
+  #k棒
+  #ggplot +號放後面
+  bb_p<-ggplot(data=data,aes(x=sdata_date))+
+    geom_linerange(aes(ymin=data[,paste0(snum,".Low")]
+                       ,ymax=data[,paste0(snum,".High")]
+    )
+    ,size=0.2)+
+    geom_rect(aes(xmin=sdata_date-0.5,xmax=sdata_date+0.5
+                  ,ymin=pmin(data[,paste0(snum,".Open")],data[,paste0(snum,".Close")])
+                  ,ymax=pmax(data[,paste0(snum,".Open")],data[,paste0(snum,".Close")])
+                  ,fill=data[,"Group"])
+    )+
+    geom_point(aes(y = equal_pt), shape = "-", size = 4, color = "black",na.rm=T)+
+    
+    scale_fill_manual(values = c("fall"="#00bb00","rise"="#ce0000"))+
+    labs(x="",y="價錢"
+         ,title=paste0(snum," ","[",sdata_date[1],"/",sdata_date[length(sdata_date)],"]"),fill=NULL)+
+    scale_x_date(date_breaks = "1 month", date_labels=c("%m/%d"))+
+    theme(axis.text.y = element_text(margin = margin(r = -21)),legend.position = "none")+        
+    geom_line(aes(y = MA_20, color = "MA_20"))+
+    geom_line(aes(y = MA_DOWN,color = "MA_DOWN"),linetype = "dashed")+
+    geom_line(aes(y = MA_UP,color = "MA_UP"),linetype = "dashed")+
+    scale_color_manual(values=c("MA_20"="blue","MA_DOWN"="blue","MA_UP"="blue"))
+  
+  print(bb_p)
+}
+
+##股票的介面圖 
+Ma_p<-function(stock_data_fun){
+  options(scipen = 999)
+  
+  #將資訊輸入
+  sdata_f<-stock_data_fun
+  snum<-sdata_f[[1]]
+  data<-sdata_f[[4]]
+  sdata_date<-sdata_f[[4]][,"sdata_date"]
+  sd_nrow<-sdata_f[[5]]
+  
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  
+  #k棒_分組
+  
+  Group<-rep(0,length(data[,paste0(snum,".Open")]))
+  equal_pt<-rep(0,length(data[,paste0(snum,".Open")]))
+  
+  for(i in 1:length(data[,paste0(snum,".Open")])){
+    ifelse(data[,paste0(snum,".Open")][i]>=data[,paste0(snum,".Close")][i]
+           ,group<-"陰線",group<-"陽線")  
+    ifelse(data[,paste0(snum,".Open")][i]==data[,paste0(snum,".Close")][i]
+           ,equal_pt[i]<-data[,paste0(snum,".Open")][i],equal_pt[i]<-NA)
+    Group[i]<-group
+  }
+  data<-cbind(data,Group,equal_pt)
+  
+  #MA計算
+  ma5<-rep(NA,s_c_nrow)
+  ma20<-rep(NA,s_c_nrow)
+  ma60<-rep(NA,s_c_nrow)
+  
+  for(i in 5:s_c_nrow){
+    #輸入收盤價
+    today_close<-s_c_data[i,4]
+    #計算5日平均
+    ma5[i]<-mean(s_c_data[c(i-4):i,4])
+  }
+  
+  for(i in 20:s_c_nrow){
+    #輸入收盤價
+    today_close<-s_c_data[i,4]
+    #計算20日平均
+    ma20[i]<-mean(s_c_data[c(i-19):i,4])
+  }
+  
+  for(i in 60:s_c_nrow){
+    #輸入收盤價
+    today_close<-s_c_data[i,4]
+    #計算5日平均
+    ma60[i]<-mean(s_c_data[c(i-59):i,4])
+  }
+  
+  #將計算完的矩陣扣到只剩想觀察的日期
+  ma5<-ma5[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  ma20<-ma20[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  ma60<-ma60[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  
+  #k棒+MA
+  ma_p<-ggplot(data=data,aes(x=sdata_date))+
+    #k棒
+    geom_linerange(aes(ymin=data[,paste0(snum,".Low")]
+                       ,ymax=data[,paste0(snum,".High")]
+    )
+    ,size=0.2)+
+    geom_rect(aes(xmin=sdata_date-0.5,xmax=sdata_date+0.5
+                  ,ymin=pmin(data[,paste0(snum,".Open")],data[,paste0(snum,".Close")])
+                  ,ymax=pmax(data[,paste0(snum,".Open")],data[,paste0(snum,".Close")])
+                  ,fill=data[,"Group"])
+    )+
+    geom_point(aes(y = equal_pt), shape = "-", size = 4, color = "black",na.rm=T)+
+    
+    scale_fill_manual(values = c("陰線"="#00bb00","陽線"="#ce0000"))+
+    
+    #MA
+    geom_line(aes(y=ma5,col="五日均線"),na.rm=T)+
+    geom_line(aes(y=ma20,col="二十日均線"),na.rm=T)+
+    geom_line(aes(y=ma60,col="六十日均線"),na.rm=T)+
+    
+    #調整
+    labs(x="",y="價錢",color=""
+         ,title=paste0(snum," ","[",sdata_date[1],"/",sdata_date[length(sdata_date)],"]"),fill=NULL)+
+    
+    scale_x_date(date_breaks = "1 month", date_labels=c("%m/%d"))+
+    theme(axis.text.y = element_text(margin = margin(r = -21)),legend.position = "none")+
+    scale_color_manual(values = c("五日均線"="blue","二十日均線"="orange","六十日均線"="purple"))+
+    theme(legend.position = c(0.97,0.96))+
+    guides(fill=F)
+  #匯出圖
+  print(ma_p)
+}
+
+##價量圖
+Volume_p<-function(data){
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  
+  sdata<-sdata_f[[4]]
+  sd_nrow<-sdata_f[[5]]
+  
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  
+  #價量_分組
+  Group_vol<-rep(0,length(s_c_data[,paste0(snum,".Close")]))
+  
+  for(i in 2:length(s_c_data[,paste0(snum,".Close")])){
+    
+    if(s_c_data[i,paste0(snum,".Close")]>s_c_data[i-1,paste0(snum,".Close")]){
+      group<-"陽線"
+    }else if(s_c_data[i,paste0(snum,".Close")]<s_c_data[i-1,paste0(snum,".Close")]){
+      group<-"陰線"
+    }else{
+      group<-"相同"
+    }
+    
+    Group_vol[i]<-group
+  }
+  s_c_data<-cbind(s_c_data,Group_vol)
+  
+  #將計算完的矩陣扣到只剩想觀察的日期
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  
+  #價量圖
+  volume_p<- ggplot(afterc_sdata , aes(x = sdata_c_date)) +
+    geom_bar(aes(y = afterc_sdata[,paste0(snum,".Volume")]
+                 ,fill=afterc_sdata[,"Group_vol"]),stat = "identity")+
+    scale_x_date(date_breaks = "1 month", date_labels=c("%m/%d"))+
+    scale_fill_manual(values = c("white","相同"="yellow","陽線"="#ce0000","陰線"="#00bb00"))+
+    theme(axis.text.y = element_text(margin = margin(r = -56)),legend.position = "none")+
+    labs(x="",y="成交量",fill=NULL)
+  
+  #theme(element_text(margin=unit(.4,"cm")))
+  #scale_y_continuous(breaks = c(4,4.25,4.5,5,6,8))
+  #scale_x_date(breaks = NULL)+
+  #scale_x_date(date_breaks = "1 month", date_labels=c("%m/%d"))+
+  #scale_y_continuous(breaks = NULL)+
+  #theme(axis.text.x = element_text(angle=30))
+  #theme_bw() + theme(panel.grid=element_blank())
+  #theme(axis.text.y = element_text(angle = 30,hjust = 1,vjust = 1))}
+  print(volume_p)
+}
+
+##Bias_p fun
+Bias_p<-function(data,whether_riskline,risk_line1,risk_line2){
+  
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  
+  sdata<-sdata_f[[4]]
+  sd_nrow<-sdata_f[[5]]
+  
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  
+  #計算
+  five_Bias<-rep(NA,s_c_nrow)
+  twenty_Bias<-rep(NA,s_c_nrow)
+  
+  for(i in 5:s_c_nrow){
+    #輸入收盤價
+    today_close<-s_c_data[i,4]
+    #計算5日平均
+    fivedayavg_close<-mean(s_c_data[c(i-4):i,4])
+    #計算5日乖離率
+    five_Bias[i]<-(today_close-fivedayavg_close)/fivedayavg_close*100
+  }
+  
+  for(i in 20:s_c_nrow){
+    #輸入收盤價
+    today_close<-s_c_data[i,4]
+    #計算20日平均
+    twentydayavg_close<-mean(s_c_data[c(i-19):i,4])
+    #計算20日乖離率
+    twenty_Bias[i]<-(today_close-twentydayavg_close)/twentydayavg_close*100
+  }
+  #將計算完的矩陣扣到只剩想觀察的日期
+  five_Bias<-five_Bias[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  twenty_Bias<-twenty_Bias[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  
+  #plot
+  bias_p<-ggplot(data=afterc_sdata,aes(x =sdata_c_date))+
+    geom_line(aes(y=five_Bias,col="五日線"),na.rm=T)+
+    geom_line(aes(y=twenty_Bias,col="二十日線"),na.rm=T)+
+    labs(x="",y="Bias(%)",color="")+
+    geom_line(aes(y=rep(0,sd_nrow)))+
+    scale_x_date(date_breaks = "1 month", date_labels=c("%m/%d"))+
+    theme(axis.text.y = element_text(margin = margin(r = -20)))+
+    scale_color_manual(values = c("五日線"="blue","二十日線"="orange"))+
+    theme(legend.position = c(0.97,0.96))
+  #col=要在aes裡面，並承上起下，顏色才會繼承
+  #灰色部份邊線#top right bottom left#margin(t=0,r=10,b=0,l=10)
+  #theme(axis.text.y.right =(element_text()))
+  #theme(element_text(margin=unit(0.1,"cm")))
+  #theme(axis.text.x = element_text(angle=30))
+  
+  #有警示線的圖
+  bias_risk_p<-bias_p+
+    geom_line(aes(y=rep(risk_line1,sd_nrow)),linetype = "dashed",col="#CC0000")+#界線
+    geom_line(aes(y=rep(-risk_line2,sd_nrow)),linetype = "dashed",col="#339933")
+  
+  #條件判斷是否要加入警示線
+  ifelse(whether_riskline==T,print(bias_risk_p),print(bias_p))
+  
+}
+
+#Arbr_p fun
+Arbr_p<-function(data){
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  
+  sdata<-sdata_f[[4]]
+  sd_nrow<-sdata_f[[5]]
+  
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  
+  open=s_c_data[,2]
+  high=s_c_data[,3]
+  low=s_c_data[,4]
+  close=s_c_data[,5]
+  #新增昨日收盤價
+  s_c_data<-mutate(s_c_data,close_yesterday=Lag(close,1))
+  #建立矩陣計算
+  s_c_data<-mutate(s_c_data,"upA", "downA","upB", "downB")
+  s_c_data[9] <- (high-open) 
+  s_c_data[10] <- (open-low)
+  s_c_data[11] <- (high-s_c_data$close_yesterday) 
+  s_c_data[12] <- (s_c_data$close_yesterday-low)
+  #index的資料_迴圈
+  ARindex=rep(NA,s_c_nrow)
+  BRindex=rep(NA,s_c_nrow)
+  
+  for (i in 26:s_c_nrow) {
+    #輸入分子
+    upA=sum(s_c_data[c(i-25):i,9])
+    #輸入分母
+    downA=sum(s_c_data[c(i-25):i,10])
+    #輸入分子
+    upB=sum(s_c_data[c(i-25):i,11])
+    #輸入分母
+    downB=abs(sum(s_c_data[c(i-25):i,12]))
+    #帶入公式
+    ARindex[i]=(upA/downA)
+    #帶入公式
+    BRindex[i]=(upB/downB)
+  }
+  
+  #將計算完的矩陣扣到只剩想觀察的日期
+  ARindex<-ARindex[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  BRindex<-BRindex[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  
+  #plot
+  arbr_p<-ggplot(data=afterc_sdata,aes(x =sdata_c_date))+
+    geom_line(aes(y=ARindex,col="AR指標"),na.rm=T)+
+    geom_line(aes(y=BRindex,col="BR指標"),na.rm=T)+
+    labs(x="",y="ARBR",color="")+
+    geom_hline(yintercept= 1, linetype = 'dashed', color = "red")+
+    scale_x_date(date_breaks = "1 month", date_labels=c("%m/%d"))+
+    theme(axis.text.y = element_text(margin = margin(r = -20)))+
+    scale_color_manual(values = c("AR指標"="blue","BR指標"="orange"))+
+    theme(legend.position = c(0.97,0.96))
+  print(arbr_p)
+  
+}
+
+#Kd_p fun
+Kdj_p<-function(data){
+  
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  
+  sdata<-sdata_f[[4]]
+  sd_nrow<-sdata_f[[5]]
+  
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  
+  
+  #########
+  
+  high=s_c_data[,3]
+  low=s_c_data[,4]
+  close=s_c_data[,5]
+  
+  ##############
+  
+  high2 <- rep(NA,s_c_nrow,10)
+  low2 <- rep(NA,s_c_nrow,10)
+  
+  #<KDJ>
+  #計算 KDJ 值
+  # 找最近九天內最大、最小值
+  
+  for(i in 9:s_c_nrow) {
+    high2[i] <- max(high[c(i-8):i])
+    low2[i] <- min(low[c(i-8):i])
+  }
+  
+  highM=high2
+  lowM=low2
+  
+  #highM=as.data.frame(highM)
+  #lowM=as.data.frame(lowM)
+  #計算RSV
+  rsv <- rep(NA,s_c_nrow)
+  
+  for(i in 9:s_c_nrow) {
+    rsvlow=lowM[i]
+    rsvhigh=highM[i]
+    rsvclose=close[i]
+    rsv[i]=((rsvclose-rsvlow)/(rsvhigh-rsvlow))*100
+  }
+  RSV=rsv
+  
+  #計算KDJ
+  #建構矩陣
+  KDJ = matrix(NA, s_c_nrow, 3)  # 構建存放數據的矩陣
+  KDJ = as.data.frame(KDJ)           # 轉換為data.frame
+  colnames(KDJ) = c("K", "D", "J")   # 1-3列的名稱為K,D,J
+  KDJ[1:8, ] = 50
+  
+  for(i in c(9:s_c_nrow)) {
+    KDJ[i, 1]=2/3 *KDJ[c(i-1), 1]+1/3*RSV[i]  #K
+    KDJ[i, 2]=2/3 *KDJ[c(i-1), 2]+1/3*KDJ[i,1]  #D
+    KDJ[i, 3]=3*KDJ[i, 2]-2*KDJ[i, 1]  #J 
+  }
+  
+  #將計算完的矩陣扣到只剩想觀察的日期
+  K<-KDJ[c(s_c_nrow-sd_nrow+1):s_c_nrow,1]
+  D<-KDJ[c(s_c_nrow-sd_nrow+1):s_c_nrow,2]
+  J<-KDJ[c(s_c_nrow-sd_nrow+1):s_c_nrow,3]
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  stock_length<-length(c(s_c_nrow-sd_nrow+1):s_c_nrow)
+  
+  #畫圖
+  kdj_p<-ggplot(data=afterc_sdata,aes(x =sdata_c_date))+
+    geom_line(aes(y=K,col="K線"),na.rm=T)+
+    geom_line(aes(y=D,col="D線"),na.rm=T)+
+    geom_line(aes(y=J,col="J線"),na.rm=T)+
+    geom_hline(yintercept= 20, linetype = 'dashed', color = "red")+
+    geom_hline(yintercept= 80, linetype = 'dashed', color = "red")+
+    labs( y = 'KDJ',x='日期',color="")+
+    theme(axis.text.y = element_text(margin = margin(r = -18)))+
+    scale_color_manual(values = c("K線"="orange","D線"="blue","J線"="#D28EFF"))+
+    theme(legend.position = c(0.97,0.96))+
+    scale_x_date(date_breaks ="1 month",date_labels=c("%m/%d"),expand = c(0,0))
+  
+  print(kdj_p)
+  
+}
+
+#Rsi_p fun
+Rsi_p <- function (data){
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  
+  sdata<-sdata_f[[4]]
+  sd_nrow<-sdata_f[[5]]
+  
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  
+  price=s_c_data[,5]
+  ###計算RSI###
+  #分別以U、D及rsi建立長度為length(price)的行
+  rsi=array(0,s_c_nrow)
+  N <- length(price)
+  U <- rep(0,N)
+  D <- rep(0,N)
+  
+  #令Lprice為隔日收盤價
+  Lprice <- Lag(price,1)
+  
+  #計算5日RSI#
+  five_rsi <- rep(NA,N)
+  for (i in 5:N){
+    #若當日收盤價大於等於前一日收盤價則動量記為U否則記入D
+    if (price[i]>=Lprice[i]){
+      U[i] <- price[i]- Lprice[i]
+    } else{
+      D[i] <- Lprice[i]- price[i]
+    }
+    #從第i-5+1日開始至第i日計算U的平均及D的平均
+    if (i>5){
+      AvgUp <- mean(U[(i-5+1):i])
+      AvgDn <- mean(D[(i-5+1):i])
+      
+      #RSI=SMA(U,n)/(SMA(U,n)+SMA(D,n))*100%
+      five_rsi[i] <- AvgUp/(AvgUp+AvgDn)*100 
+    }
+  }
+  
+  #計算20日RSI#
+  twenty_rsi <- rep(NA,N)
+  for (i in 20:N){
+    #若當日收盤價大於等於前一日收盤價則動量記為U否則記入D
+    if (price[i]>=Lprice[i]){
+      U[i] <- price[i]- Lprice[i]
+    } else{
+      D[i] <- Lprice[i]- price[i]
+    }
+    #從第i-20+1日開始至第i日計算U的平均及D的平均
+    if (i>20){
+      AvgUp <- mean(U[(i-20+1):i])
+      AvgDn <- mean(D[(i-20+1):i])
+      
+      #RSI=SMA(U,n)/(SMA(U,n)+SMA(D,n))*100%
+      twenty_rsi[i] <- AvgUp/(AvgUp+AvgDn)*100 
+    }
+  }
+  
+  #計算60日RSI#
+  sixty_rsi <- rep(NA,N)
+  for (i in 60:N){
+    #若當日收盤價大於等於前一日收盤價則動量記為U否則記入D
+    if (price[i]>=Lprice[i]){
+      U[i] <- price[i]- Lprice[i]
+    } else{
+      D[i] <- Lprice[i]- price[i]
+    }
+    #從第i-60+1日開始至第i日計算U的平均及D的平均
+    if (i>60){
+      AvgUp <- mean(U[(i-60+1):i])
+      AvgDn <- mean(D[(i-60+1):i])
+      
+      #RSI=SMA(U,n)/(SMA(U,n)+SMA(D,n))*100%
+      sixty_rsi[i] <- AvgUp/(AvgUp+AvgDn)*100 
+    }
+  }
+  
+  #將計算完的矩陣扣到只剩想觀察的日期
+  five_rsi<-five_rsi[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  twenty_rsi<-twenty_rsi[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  sixty_rsi<-sixty_rsi[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  
+  
+  #畫圖
+  rsi_p=ggplot(data=afterc_sdata,aes(x =sdata_c_date))+
+    geom_line(aes(y=five_rsi,col="五日rsi"),na.rm=T)+
+    geom_line(aes(y=twenty_rsi,col="二十日rsi"),na.rm=T)+
+    geom_line(aes(y=sixty_rsi,col="六十日rsi"),na.rm=T)+
+    geom_hline(yintercept= 50, linetype = 'dashed', color = "red")+
+    labs(x="",y="RSI(%)",color="")+
+    scale_x_date(date_breaks = "1 month", date_labels=c("%m/%d"))+
+    theme(axis.text.y = element_text(margin = margin(r = -20)))+
+    scale_color_manual(values = c("五日rsi"="blue","二十日rsi"="orange","六十日rsi"="purple"))+
+    theme(legend.position = c(0.97,0.96))
+  
+  
+  print(rsi_p)
+}
+
+#Obv_p fun
+Obv_p<-function(data){
+  
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  
+  sdata<-sdata_f[[4]]
+  sd_nrow<-sdata_f[[5]]
+  
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  
+  
+  #計算OBV
+  change = diff(s_c_data[,5])
+  signs=rep(0,length(s_c_data[,5]))
+  signs[1] =0
+  for (i in 2:length(s_c_data[,5])) {
+    signs[i]=sign(change[i-1])
+  }
+  v=s_c_data[,6] *signs
+  OBV= rep(0,length(s_c_data[,5]))
+  OBV[1]=s_c_data[1,6]
+  for(i in 2:length(s_c_data[,5])){
+    OBV[i]=OBV[i-1]+v[i]
+  }
+  
+  #將計算完的矩陣扣到只剩想觀察的日期
+  OBV<-OBV[c(s_c_nrow-sd_nrow+1):s_c_nrow]
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  
+  #畫圖
+  high=max(OBV)
+  low=min(OBV)
+  obv_p=ggplot(data=afterc_sdata,aes(x =sdata_c_date))+
+    geom_line(aes(y=OBV,col="OBV線"))+
+    geom_hline(yintercept= 0, linetype = 'dashed', color = 'red')+
+    scale_y_continuous(breaks =seq(signif(low,5),signif(high,5),1000000000))+
+    scale_x_date(date_breaks = "1 month", date_labels =c("%m/%d"))+#,expand = c(0,0)
+    scale_color_manual(values = c("OBV線"="blue"))+
+    theme(axis.text.y = element_text(margin = margin(r = -65)))+
+    theme(legend.position = c(0.97,0.96))+
+    labs(x="",y="OBV",color="")
+  
+  print(obv_p)
+}
+
+
+###財報
+
+#損益表
+Income.statement=function(data){
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  snum=substring(snum, 1, 4)
+  
+  A='https://statementdog.com/analysis/'
+  B='/income-statement'
+  url=paste(A,snum,B)
+  htmlcontent=read_html(url)
+  titlepath='//td | //th | //*[contains(concat( " ", @class, " " ), concat( " ", "data-explain-title", " " ))]'
+  titles=htmlcontent %>% html_nodes(xpath=titlepath) %>% html_text()
+  mytable=data.frame(title=titles)
+  mytable=mytable[-c(1),]
+  dim(mytable)<-matrix(c(5,10))
+  mytable=t(mytable)
+  rowtitle=mytable[1:10,c(1)]
+  mytable=mytable[,2:5]
+  mytable=data.frame(mytable,row.names=rowtitle)
+  main.title="損益表"
+  footnote="單位:台幣(元)"
+  mytable=ggtexttable(mytable,cols = NULL,theme = ttheme(base_style = "light",base_size = 8,base_colour = "black",padding = unit(c(10,10), "mm")))
+  mytable%>%
+    tab_add_title(text = main.title, face = "bold", size=20.0,padding = unit(1.5, "line"))%>%
+    tab_add_footnote(text = footnote,face = "bold", size=12.0,padding = unit(1.5, "line"))
+}
+
+#現金流量表
+Cash.flow.statement=function(data){
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  snum=substring(snum, 1, 4)
+  
+  A= "https://statementdog.com/analysis/ "
+  B='/cash-flow-statement'
+  url=paste(A,snum,B)
+  htmlcontent=read_html(url)
+  titlepath='//td | //th | //*[contains(concat( " ", @class, " " ), concat( " ", "data-explain-title", " " ))]'
+  titles=htmlcontent %>% html_nodes(xpath=titlepath) %>% html_text()
+  mytable=data.frame(title=titles)
+  mytable=mytable[-c(1),]
+  dim(mytable)<-matrix(c(5,9))
+  mytable=t(mytable)
+  rowtitle=mytable[1:9,c(1)]
+  mytable=mytable[,2:5]
+  mytable=data.frame(mytable,row.names=rowtitle)
+  main.title="現金流量表"
+  footnote="單位:台幣(元)"
+  mytable=ggtexttable(mytable,cols = NULL,theme = ttheme(base_style = "light",base_size = 10,base_colour = "black",padding = unit(c(10,10), "mm")))
+  mytable%>%
+    tab_add_title(text = main.title, face = "bold", size=20.0,padding = unit(1.5, "line"))%>%
+    tab_add_footnote(text = footnote,face = "bold", size=12.0,padding = unit(1.5, "line"))
+}
+
+#資產負債表
+Balance.sheet=function(data){
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  snum=substring(snum, 1, 4)
+  
+  A= "https://statementdog.com/analysis/"
+  B='/liabilities-and-equity'
+  url=paste(A,snum,B)
+  htmlcontent=read_html(url)
+  titlepath='//td | //th | //*[contains(concat( " ", @class, " " ), concat( " ", "data-explain-title", " " ))]'
+  titles=htmlcontent %>% html_nodes(xpath=titlepath) %>% html_text()
+  mytable=data.frame(title=titles)
+  mytable=mytable[-c(1),]
+  dim(mytable)<-matrix(c(5,10))
+  mytable=t(mytable)
+  rowtitle=mytable[1:10,c(1)]
+  mytable=mytable[,2:5]
+  mytable=data.frame(mytable,row.names=rowtitle)
+  main.title="資產負債表"
+  footnote="單位:台幣(元)"
+  mytable=ggtexttable(mytable,cols = NULL,theme = ttheme(base_style = "light",base_size = 8,base_colour = "black",padding = unit(c(10,10), "mm")))
+  mytable%>%
+    tab_add_title(text = main.title, face = "bold", size=20.0,padding = unit(1.5, "line"))%>%
+    tab_add_footnote(text = footnote,face = "bold", size=12.0,padding = unit(1.5, "line"))}
+
+#股票代碼
+code=pdf_text("https://www.sc.com/tw/download/SE1026.pdf")%>%
+  readr::read_lines()
+dim(code)=matrix(c(346,1))
+code1=code[3:89]
+dim(code1)=matrix(c(87,1))
+code2=code[92:176]
+dim(code2)=matrix(c(85,1))
+code3=code[179:263]
+dim(code3)=matrix(c(85,1))
+code4=code[266:346]
+dim(code4)=matrix(c(81,1))
+code=rbind(code1,code2,code3,code4)
+code=unlist(strsplit(str_squish(code), " "))
+code=matrix(data=code,ncol=2,byrow = TRUE)
+code=cbind(paste0(code[,1],".TW"),code[,2])
+
+#台股大盤(加權指數)fuction
+TWII_p=function(startDT,endDT){
+  TWII<-getSymbols("^TWII",auto.assign=FALSE, from=startDT, to=endDT)
+  chartSeries(TWII)
+  ma5<-runMean(TWII[,4],n=5)
+  ma20<-runMean(TWII[,4],n=20)  
+  ma60<-runMean(TWII[,4],n=60)  
+  print(addTA(ma5,on=1,col="white"))
+  print(addTA(ma20,on=1,col="blue"))
+  print(addTA(ma60,on=1,col="red"))
+}
+
+#美股大盤function
+DJI_p=function(startDT,endDT){
+  TWII<-getSymbols("^TWII",auto.assign=FALSE, from=startDT, to=endDT)
+  DJI<-getSymbols("^DJI",auto.assign=FALSE, from=startDT, to=endDT)
+  chartSeries(DJI)
+  ma5<-runMean(TWII[,4],n=5)
+  ma20<-runMean(DJI[,4],n=20)
+  ma60<-runMean(DJI[,4],n=60)
+  print(addTA(ma5,on=1,col="yellow"))
+  print(addTA(ma20,on=1,col="blue"))
+  print(addTA(ma60,on=1,col="red"))
+}
+
+#籌碼面
+chip.surface=function(data){
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  snum=substring(snum, 1, 4)
+  url=paste0("https://histock.tw/stock/chips.aspx?no=",snum)
+  htmlcontent=read_html(url)
+  titlepath='//*[contains(concat( " ", @class, " " ), concat( " ", "w2", " " ))] | //*[contains(concat( " ", @class, " " ), concat( " ", "w1", " " ))]'
+  titles=htmlcontent %>% html_nodes(xpath=titlepath) %>% html_text()
+  mytable=data.frame(title=titles)
+  mytable=as.matrix(mytable)
+  dim(mytable)<-matrix(c(6,32))
+  mytable=t(mytable)
+  rowtitle=mytable[,c(1)]
+  mytable=mytable[,2:5]
+  mytable=cbind(rowtitle,mytable)
+  mytable=mytable[-17,]
+  mytable=data.frame(mytable)
+  main.title="籌碼面"
+  footnote="單位:台幣(元)"
+  mytable=ggtexttable(mytable,rows  =  NULL,cols = NULL,theme = ttheme(base_style = "light",base_size = 10,base_colour = "black"))
+  mytable%>%
+    tab_add_title(text = main.title, face = "bold", size=20.0,padding = unit(1.5, "line"))%>%
+    tab_add_footnote(text = footnote,face = "bold", size=10.0,padding = unit(1.5, "line"))}
+
+#盒形圖1
+box_p1<-function(data){
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  
+  sdata<-sdata_f[[4]]
+  sd_nrow<-sdata_f[[5]]
+  
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  ##########
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  
+  open=afterc_sdata[,2]
+  high=afterc_sdata[,3]
+  low=afterc_sdata[,4]
+  close=afterc_sdata[,5]
+  adjusted=afterc_sdata[,7]
+  ####
+  open<-as.data.frame(open)
+  high<-as.data.frame(high)
+  low<-as.data.frame(low)
+  close<-as.data.frame(close)
+  adjusted<-as.data.frame(adjusted)
+  
+  data=cbind(open,high,low,close,adjusted)
+  boxplot(data) 
+}
+#盒形圖2
+box_p2<-function(data){
+  #將資訊輸入
+  sdata_f<-data
+  snum<-sdata_f[[1]]
+  
+  sdata<-sdata_f[[4]]
+  sd_nrow<-sdata_f[[5]]
+  
+  s_c_data<-sdata_f[[6]]
+  s_c_nrow<-sdata_f[[7]]
+  ##########
+  afterc_sdata<-s_c_data[c(s_c_nrow-sd_nrow+1):s_c_nrow,]
+  volume=afterc_sdata[,6]
+  ####
+  volume<-as.data.frame(volume)
+  ggplot(volume, aes(y=volume))+scale_x_discrete()+geom_boxplot()+ xlab("volume")
+  
+}
+
+################################################################################
+
+header <- dashboardHeader(title = "韭菜·史塔克",
+             dropdownMenu(type = 'message',headerText ="喜歡的話，歡迎幫我們分享",
+                                 icon = icon("share-alt"),  
+                                   messageItem(
+                                     from = "聯絡信箱",
+                                     message =  "",
+                                     icon = icon("envelope"),
+                                     href = "mailto: tkustatdc@gmail.com"
+                                   ),
+                                   messageItem(
+                                     from = 'Twitter',
+                                     message = "",
+                                     icon = icon("twitter"),
+                                     href = "https://twitter.com/intent/tweet?url=http%3A%2F%2Ftradeintelligence.mbie.govt.nz&text=New%20Zealand%20Trade%20Intelligence%20Dashboard"
+                                   ),
+                                   messageItem(
+                                     from = 'Facebook',
+                                     message = "",
+                                     icon = icon("facebook"),
+                                     href = "https://www.facebook.com/sharer/sharer.php?u=http%3A%2F%2Ftradeintelligence.mbie.govt.nz"
+                                   ),
+                                   messageItem(
+                                     from = 'Tumblr',
+                                     message = "",
+                                     icon = icon("tumblr"),
+                                     href = "http://www.tumblr.com/share?v=3&u=http%3A%2F%2Ftradeintelligence.mbie.govt.nz&t=New%20Zealand%20Trade%20Intelligence%20Dashboard"
+                                   ))
+)
+
+sidebar <- dashboardSidebar(
+  sidebarMenu(
+    #頁數 
+    menuItem("技術面", tabName = "technical", icon = icon("signal"),
+             badgeLabel = "主頁", badgeColor = "green"),
+    menuItem("基本面(財務報表)", tabName = "Financial Statements", icon = icon("balance-scale"),
+         menuSubItem("基本財務報表", tabName = "Financial Statements1", icon = icon("angle-right")),
+         menuSubItem("完整財務報表", tabName = "Financial Statements2", icon = icon("angle-right"))),
+    menuItem("籌碼面", tabName = "chip surface", icon = icon("chart-area")),
+    menuItem("進出場分析", tabName = "dashboard", icon = icon("trello")),
+    menuItem("常見問題", tabName = "dashboard", icon = icon("info-circle"),
+             menuSubItem("關於指標", tabName = "primary", icon = icon("angle-right")),
+             menuSubItem("指標技術應用", tabName = "primary", icon = icon("angle-right")),
+             menuSubItem("指標教學圖", tabName = "primary", icon = icon("angle-right")))
+    ))
+
+body <-   dashboardBody(
+  tabItems(
+    #股票介面
+    tabItem(tabName = "technical",
+      h5(p(tags$li(tags$b(tags$a(href="https://tw.stock.yahoo.com/h/kimosel.php", "股票代碼查詢", class="externallink"))))),
+            helpText("請輸入台股編號4或6碼"),
+            #拉頁找代碼
+            selectInput(
+              "canpabbnm",
+              label = "",
+              choices =list("台股編號"=code[,1]),
+              selected = "2603.TW"
+            ),
+            dateRangeInput("date", label = h3("選擇時間"),separator="到",
+                           start  = "2021-12-15",
+                           end    = "2022-04-14",
+                           min    = "2000-08-15",#可改
+                           max    = Sys.Date()
+            ),
+            
+            helpText("請以正常時間順序輸入"),
+            helpText("例:2021-01-01 到 2021-12-31"),
+            
+            #k棒、bb、ma
+            #k棒、bb、ma
+            selectInput("base","基本訊息:",
+                        c("K棒圖" = "candle_p",
+                          "布林通道" = "bb_p",
+                          "移動平均線" = "ma_p"),
+                        selected = "K棒圖"
+            ),
+            
+            #是否要成交量
+            checkboxInput("volplot", label = "是否要顯示成交量",value =T),
+            
+            #指標輸入位置
+            h3("選擇指標"),h5("可多選"),
+            selectInput("index1","指標訊息:",
+                        c("BIAS乖離率"="BIAS","KDJ隨機指標"= "KDJ","RSI相對強弱指數"="RSI"
+                          ,"OBV能量潮指標" = "OBV","ARBR人氣指標&收盤指標" = "AR&BR"),
+                        selected = "BIAS"),
+            #radioButtons( 改成上面的selectinput 7個指標的點選按鈕所佔的空間太多
+            #  "index1",label = "",
+            #  choices = c("BIAS乖離率"="BIAS","KDJ隨機指標"= "KDJ","RSI相對強弱指數"="RSI"
+            #              ,"OBV能量潮指標" = "OBV","AR開價指標&BR收盤價強弱指" = "AR&BR"),
+            #  selected = "BIAS"
+            #)
+            
+            #
+            tabsetPanel(#根據不同條件變更ui
+              id = "params",
+              type = "hidden",
+              tabPanel("BIAS",#要與輸入的名字相同
+                       checkboxInput("whether_riskline", label = "是否要顯示風險界線",value =T),
+                       numericInput("up_bias_risk",label="上界線",min=0,value=11),
+                       numericInput("dn_bias_risk",label="下界線",min=0,value=11)
+              ),
+              tabPanel("RSI", 
+                       numericInput("min", "min", value = 0),
+                       numericInput("max", "max", value = 1)
+              ),
+              tabPanel("OBV",
+                       numericInput("rate", "rate", value = 1, min = 0),
+              ),
+              tabPanel("AR&BR",
+                       numericInput("rate", "rate", value = 1, min = 0),
+              ),
+              tabPanel("KDJ",
+                       numericInput("rate", "rate", value = 1, min = 0)
+              )
+            )),
+    #基本面
+    tabItem(tabName = "Financial Statements",
+            h2("Widgets tab content")),
+    #籌碼面
+    tabItem(tabName = "chip surface",
+            h2("Widgets tab content"))
+  ))
+                     
+
+ui <- dashboardPage(header,sidebar,body,skin ="yellow")
+
+server <- function(input, output) { }
+
+shinyApp(ui, server)
